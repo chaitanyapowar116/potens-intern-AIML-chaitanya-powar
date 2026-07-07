@@ -11,6 +11,10 @@ export default defineConfig({
         target: 'http://127.0.0.1:5000',
         changeOrigin: true,
       },
+      '/contradict': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+      },
     },
   },
 });

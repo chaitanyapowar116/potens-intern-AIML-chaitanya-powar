@@ -42,20 +42,28 @@ function parseAnswer(rawAnswer) {
   };
 }
 
-function formatContradictionResult(result) {
+function normalizeContradictionResult(result) {
   if (!result) {
-    return 'No contradiction result returned.';
+    return null;
   }
 
   if (typeof result === 'string') {
+    const trimmed = result.trim();
+    const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    const candidate = fencedMatch ? fencedMatch[1] : trimmed;
+
     try {
-      return JSON.stringify(JSON.parse(result), null, 2);
+      return { type: 'object', data: JSON.parse(candidate) };
     } catch {
-      return result;
+      return { type: 'text', text: candidate };
     }
   }
 
-  return JSON.stringify(result, null, 2);
+  if (typeof result === 'object') {
+    return { type: 'object', data: result };
+  }
+
+  return { type: 'text', text: String(result) };
 }
 
 function App() {
@@ -65,7 +73,7 @@ function App() {
   const [contradictionLoading, setContradictionLoading] = useState(false);
   const [error, setError] = useState('');
   const [contradictionError, setContradictionError] = useState('');
-  const [contradictionResult, setContradictionResult] = useState('');
+  const [contradictionResult, setContradictionResult] = useState(null);
   const [lastAnswer, setLastAnswer] = useState('');
 
   const handleSubmit = async (event) => {
@@ -131,7 +139,7 @@ function App() {
 
     setContradictionLoading(true);
     setContradictionError('');
-    setContradictionResult('');
+    setContradictionResult(null);
 
     try {
       const response = await fetch('/contradict', {
@@ -148,7 +156,7 @@ function App() {
         throw new Error(data.error || 'Unable to compare the texts.');
       }
 
-      setContradictionResult(formatContradictionResult(data.result));
+      setContradictionResult(normalizeContradictionResult(data.result));
     } catch (err) {
       setContradictionError(err.message || 'Something went wrong.');
     } finally {
@@ -190,7 +198,32 @@ function App() {
             <article className="result-block">
               <div className="result-row">
                 <span className="result-label">Contradiction Result</span>
-                <pre>{contradictionResult}</pre>
+                {contradictionResult.type === 'object' ? (
+                  <div className="contradiction-grid">
+                    <div className="contradiction-item">
+                      <span className="contradiction-key">Contradiction</span>
+                      <p className="contradiction-value">
+                        {contradictionResult.data?.contradiction ? 'Yes' : 'No'}
+                      </p>
+                    </div>
+                    <div className="contradiction-item">
+                      <span className="contradiction-key">Reason</span>
+                      <p className="contradiction-value">
+                        {contradictionResult.data?.reason || 'No reason provided.'}
+                      </p>
+                    </div>
+                    <div className="contradiction-item">
+                      <span className="contradiction-key">Conflicting Topics</span>
+                      <p className="contradiction-value">
+                        {Array.isArray(contradictionResult.data?.conflicting_topics) && contradictionResult.data.conflicting_topics.length
+                          ? contradictionResult.data.conflicting_topics.join(', ')
+                          : 'None'}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="contradiction-value">{contradictionResult.text}</p>
+                )}
               </div>
             </article>
           ) : (

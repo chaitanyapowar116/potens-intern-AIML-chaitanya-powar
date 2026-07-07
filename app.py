@@ -48,63 +48,68 @@ from flask import request, jsonify
 @app.route("/contradict", methods=["POST"])
 def contradict():
     try:
-        payload = request.get_json()
+        payload = request.get_json(force=True)
 
-        if not payload:
+        if payload is None:
             return jsonify({"error": "Request body is required."}), 400
 
         contents = payload.get("contents")
 
-        if not contents:
-            return jsonify({"error": "'contents' field is required."}), 400
-
         if not isinstance(contents, list):
             return jsonify({"error": "'contents' must be a list."}), 400
 
-        if len(contents) < 2:
-            return jsonify({"error": "Provide at least two contents to compare."}), 400
+        if len(contents) != 2:
+            return jsonify({"error": "'contents' must contain exactly two strings."}), 400
+
+        question = str(contents[0]).strip()
+        answer = str(contents[1]).strip()
 
         prompt = f"""
-        You are an expert document comparison assistant.
+You are an expert document QA evaluator.
 
-        Your task is to compare the following pieces of text.
+You are given:
 
-        Determine:
-        1. Whether there are any contradictions or conflicts.
-        2. What topic(s) they conflict on.
-        3. Explain the reasoning.
-        4. If they do not conflict, explain why.
-        5. Ignore wording differences and focus on factual meaning.
+1. A user's question.
+2. An answer generated from retrieved documents.
 
-        Return ONLY valid JSON in the following format:
+Your job is to determine whether the answer contradicts the question or contains any internally contradictory statements.
 
-        {{
-            "contradiction": true,
-            "reason": "...",
-            "conflicting_topics": [
-                "Topic 1",
-                "Topic 2"
-            ]
-        }}
+Rules:
+- Compare the factual meaning, not wording.
+- Ignore formatting such as answer1, source1, answer2, etc.
+- If the answer correctly answers the question and contains no conflicting facts, contradiction should be false.
+- If the answer contains conflicting statements or contradicts the intent of the question, contradiction should be true.
+- Return ONLY valid JSON.
+- Do not include markdown or explanations outside the JSON.
 
-        Contents:
+Return this exact JSON format:
 
-        """
+{{
+    "contradiction": true,
+    "reason": "...",
+    "conflicting_topics": [
+        "Topic 1",
+        "Topic 2"
+    ]
+}}
 
-        for idx, content in enumerate(contents, start=1):
-            prompt += f"\nContent {idx}:\n{content}\n"
-        llm = utils.load_llm()
-        response = llm.invoke(prompt)
+Question:
+{question}
+
+Answer:
+{answer}
+"""
+
+        response = utils.llm.invoke(prompt)
 
         return jsonify({
             "result": response.content
-        })
+        }), 200
 
     except Exception as e:
         return jsonify({
             "error": str(e)
         }), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
