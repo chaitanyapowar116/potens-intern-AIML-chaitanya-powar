@@ -4,31 +4,69 @@ function parseAnswer(rawAnswer) {
   const text = typeof rawAnswer === 'string' ? rawAnswer : String(rawAnswer ?? '');
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
-  const output = [];
-  const sources = [];
+  const entries = [];
+  let currentEntry = { context: '', source: '' };
+
+  const pushCurrentEntry = () => {
+    if (!currentEntry.context && !currentEntry.source) {
+      return;
+    }
+
+    entries.push({ ...currentEntry });
+    currentEntry = { context: '', source: '' };
+  };
 
   lines.forEach((line) => {
     if (/^answer\d*:/i.test(line)) {
-      output.push(line.replace(/^answer\d*:\s*/i, ''));
+      pushCurrentEntry();
+      currentEntry.context = line.replace(/^answer\d*:\s*/i, '');
     } else if (/^source\d*:/i.test(line)) {
-      sources.push(line.replace(/^source\d*:\s*/i, ''));
+      currentEntry.source = line.replace(/^source\d*:\s*/i, '');
+      pushCurrentEntry();
     } else if (!line.startsWith('user_query:')) {
-      output.push(line);
+      if (currentEntry.context) {
+        currentEntry.context += `\n${line}`;
+      } else {
+        currentEntry.context = line;
+      }
     }
   });
 
+  if (currentEntry.context || currentEntry.source) {
+    pushCurrentEntry();
+  }
+
   return {
-    output: output.join('\n'),
-    sources: sources.join('\n'),
+    entries,
+    fallbackContext: entries.length ? '' : text,
   };
+}
+
+function formatContradictionResult(result) {
+  if (!result) {
+    return 'No contradiction result returned.';
+  }
+
+  if (typeof result === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(result), null, 2);
+    } catch {
+      return result;
+    }
+  }
+
+  return JSON.stringify(result, null, 2);
 }
 
 function App() {
   const [query, setQuery] = useState('');
-  const [output, setOutput] = useState('');
-  const [sources, setSources] = useState('');
+  const [resultBlocks, setResultBlocks] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [contradictionLoading, setContradictionLoading] = useState(false);
   const [error, setError] = useState('');
+  const [contradictionError, setContradictionError] = useState('');
+  const [contradictionResult, setContradictionResult] = useState('');
+  const [lastAnswer, setLastAnswer] = useState('');
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -40,8 +78,7 @@ function App() {
 
     setLoading(true);
     setError('');
-    setOutput('');
-    setSources('');
+    setResultBlocks([]);
 
     try {
       const response = await fetch('/ask', {
@@ -60,13 +97,62 @@ function App() {
 
       const rawAnswer = data.answer?.content || data.answer || '';
       const parsed = parseAnswer(rawAnswer);
+      const sources = Array.isArray(data.sources) ? data.sources : [];
 
-      setOutput(parsed.output || 'No answer returned.');
-      setSources(parsed.sources || 'No sources returned.');
+      setLastAnswer(rawAnswer);
+
+      const blocks = parsed.entries.length
+        ? parsed.entries
+        : sources.length
+          ? sources.map((item) => ({
+              context: parsed.fallbackContext || 'No answer returned.',
+              source: [item.source, item.page ? `Page ${item.page}` : ''].filter(Boolean).join(' • '),
+            }))
+          : [{ context: parsed.fallbackContext || 'No answer returned.', source: 'No sources returned.' }];
+
+      setResultBlocks(blocks);
     } catch (err) {
       setError(err.message || 'Something went wrong.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleContradict = async () => {
+    if (!query.trim()) {
+      setContradictionError('Please ask a query first.');
+      return;
+    }
+
+    if (!lastAnswer.trim()) {
+      setContradictionError('Please ask a query first to get an answer.');
+      return;
+    }
+
+    setContradictionLoading(true);
+    setContradictionError('');
+    setContradictionResult('');
+
+    try {
+      const response = await fetch('/contradict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ contents: [query.trim(), lastAnswer.trim()] }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to compare the texts.');
+      }
+
+      setContradictionResult(formatContradictionResult(data.result));
+    } catch (err) {
+      setContradictionError(err.message || 'Something went wrong.');
+    } finally {
+      setContradictionLoading(false);
     }
   };
 
@@ -86,23 +172,47 @@ function App() {
             placeholder="Type your question here..."
             rows={4}
           />
-          <button type="submit" disabled={loading}>
-            {loading ? 'Thinking...' : 'Ask'}
-          </button>
+          <div className="button-row">
+            <button type="submit" disabled={loading}>
+              {loading ? 'Thinking...' : 'Ask'}
+            </button>
+            <button type="button" className="secondary-button" onClick={handleContradict} disabled={contradictionLoading}>
+              {contradictionLoading ? 'Checking...' : 'Contradict'}
+            </button>
+          </div>
         </form>
 
         {error ? <p className="error">{error}</p> : null}
+        {contradictionError ? <p className="error">{contradictionError}</p> : null}
 
-        <div className="result-grid">
-          <article className="result-panel">
-            <h2>Output</h2>
-            <pre>{output || 'Your answer will appear here.'}</pre>
-          </article>
+        <div className="result-stack">
+          {contradictionResult ? (
+            <article className="result-block">
+              <div className="result-row">
+                <span className="result-label">Contradiction Result</span>
+                <pre>{contradictionResult}</pre>
+              </div>
+            </article>
+          ) : (
+            <div className="empty-state">Contradiction analysis will appear here.</div>
+          )}
 
-          <article className="result-panel">
-            <h2>Source</h2>
-            <pre>{sources || 'Sources will appear here.'}</pre>
-          </article>
+          {resultBlocks.length ? (
+            resultBlocks.map((item, index) => (
+              <article className="result-block" key={`${item.source || 'source'}-${index}`}>
+                <div className="result-row">
+                  <span className="result-label">Context</span>
+                  <p>{item.context || 'No context returned.'}</p>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Source</span>
+                  <p>{item.source || 'No source returned.'}</p>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state">Your answer will appear here.</div>
+          )}
         </div>
       </section>
     </main>

@@ -9,21 +9,39 @@ from utils import Utils
 app = Flask(__name__)
 CORS(app)
 utils = Utils()
-
+print("+++++++++++++++++++++++++++++++++")
 @app.route("/ask", methods=["POST"])
 def ask():
+    print("Received request:", request.data)
     payload = request.get_json()
     user_query = payload.get("query", "").strip()
-    utils = Utils()
     if not user_query:
         return jsonify({"error": "Query is required"}), 400
-    
+    print("------------------------------------")
     context = utils.context_builder(user_query)
     if context is None:
-        return jsonify({"error": "No relevant context found"}), 404
+        context = [{"source_id": 0, "content": "No relevant context found.", "metadata": {}, "score": 0.0}]
 
+    print("Context:", context)
     answer = utils.generate_answer(user_query, context)
-    return jsonify({"answer": answer}), 200
+
+    print("Answer:", answer)
+
+    sources = []
+
+    for item in context:
+        metadata = item.get("metadata", {})
+
+        sources.append({
+            "source_id": item.get("source_id"),
+            "source": metadata.get("source"),
+            "page": metadata.get("page")
+        })
+
+    return jsonify({
+        "answer": answer.content,
+        "sources": sources
+    }), 200
 
 from flask import request, jsonify
 

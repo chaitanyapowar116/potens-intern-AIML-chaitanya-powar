@@ -1,125 +1,247 @@
+from typing import List, Dict
+import os
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from dotenv import load_dotenv
+from langchain_chroma import Chroma
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader, PyMuPDFLoader
+from langchain_community.document_loaders import DirectoryLoader
+
+
 class Utils:
-    
-    def context_builder(self, user_query):
 
-        from langchain_huggingface import HuggingFaceEmbeddings
-        from langchain_chroma import Chroma
+    def __init__(self):
 
-        embedder = HuggingFaceEmbeddings(
+        load_dotenv()
+
+        print("Initializing Utils...")
+
+        # ---------- Load PDFs ----------
+        self.dir_loader = DirectoryLoader(
+            "./data",
+            glob="**/*.pdf",
+            loader_cls=PyMuPDFLoader,
+            show_progress=True,
+        )
+
+        self.documents = self.dir_loader.load()
+
+        print(f"Loaded {len(self.documents)} documents.")
+
+        # ---------- Split Documents ----------
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""],
+        )
+
+        self.split_docs = self.text_splitter.split_documents(self.documents)
+
+        print(
+            f"Split {len(self.documents)} documents into {len(self.split_docs)} chunks."
+        )
+
+        # ---------- Embedding Model ----------
+        self.embedder = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
 
-        vector_db = Chroma(
+        persist_directory = "./chroma_langchain_db"
+
+        # ---------- Load Existing Chroma ----------
+        self.vector_db = Chroma(
             collection_name="my_collection",
-            embedding_function=embedder,
-            persist_directory="./chroma_langchain_db"
+            embedding_function=self.embedder,
+            persist_directory=persist_directory,
         )
 
-        results = vector_db.similarity_search_with_relevance_scores(
-            query=user_query,
-            k=5
+        # ---------- Build DB only once ----------
+        if self.vector_db._collection.count() == 0:
+
+            print("Creating new Chroma database...")
+
+            self.vector_db.add_documents(self.split_docs)
+
+            print(
+                f"Indexed {self.vector_db._collection.count()} document chunks."
+            )
+
+        else:
+
+            print(
+                f"Loaded existing Chroma database with "
+                f"{self.vector_db._collection.count()} chunks."
+            )
+
+        # ---------- LLM ----------
+        self.llm = self.load_llm()
+
+        print("Utils initialized successfully.\n")
+
+    ###########################################################################
+
+    def load_llm(self):
+
+        api_key = os.getenv("GROQ_API_KEY", "").strip()
+
+        print("GROQ_API_KEY found:", bool(api_key))
+
+        if not api_key:
+            raise ValueError(
+                "GROQ_API_KEY is missing. Please add it to your .env file."
+            )
+
+        try:
+            print("Creating ChatGroq...")
+
+            llm = ChatGroq(
+                model="llama-3.3-70b-versatile",
+                groq_api_key=api_key,
+            )
+
+            print("ChatGroq created successfully.")
+
+            return llm
+
+        except Exception as exc:
+            print("Failed to create ChatGroq:")
+            print(exc)
+            raise
+
+    ###########################################################################
+
+    def context_builder(self, user_query: str):
+
+        results = self.vector_db.similarity_search_with_score(
+        user_query, k=4
         )
 
-        THRESHOLD = 0.90
+        print("\nRetrieved Documents")
+
+        for i, (_, score) in enumerate(results, start=1):
+            print(f"Document {i} Score = {score:.4f}")
+
 
         context = []
 
         for i, (doc, score) in enumerate(results, start=1):
-
-            if score >= THRESHOLD:
-
+            print(f"Loop {i}: score={score}")
+            if score > 0.7:
+                print(f"Appending document {i}")
                 context.append({
                     "source_id": i,
                     "content": doc.page_content,
-                    "metadata": doc.metadata,
-                    "score": score
+                    "metadata": doc.metadata
                 })
 
-        if len(context) == 0:
+        if not context:
             return None
 
-        return context   
-    
-    def load_llm(self):
-        from langchain_groq import ChatGroq
-        import os 
-        from dotenv import load_dotenv
+        return context
 
-        load_dotenv()
+    ###########################################################################
 
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-        llm = None
-        tools = None
-        startup_error = None
+    def format_context(self, docs: List[Dict]) -> str:
 
-        print("api_key:", repr(api_key))
-        print("startup tools:", tools if "tools" in globals() else "not defined")
-        if api_key:
-            try:
-                print("Creating ChatGroq...")
-                llm = ChatGroq(
-                    model="llama-3.3-70b-versatile",
-                    groq_api_key=api_key,
-                )
-                print("ChatGroq created")
-            except Exception as exc:
-                startup_error = str(exc)
-        else:
-            startup_error = (
-                "GROQ_API_KEY is not set. Add it to your environment or a .env file "
-                "before calling /ask."
-            )
-    def format_context(self,docs):
         formatted = []
-        for d in docs:
-            source_id = d.get("source_id", "unknown_id")
-            content = d.get("content", "")
-            metadata = d.get("metadata", {})
-            
-            source = metadata.get("source", "unknown_source")
-            page = metadata.get("page", "unknown_page")
-            
-            formatted.append(
-                f"[source {source_id} | {source} page {page}]\n{content}\n"
-            )
-        return "\n".join(formatted)
-                
-    def generate_answer(self,user_query:str,context:str):
-        llm = self.load_llm()
 
-        # Usage
-        new_context = self.format_context(context)
+        for d in docs:
+
+            source_id = d.get("source_id", "unknown")
+
+            metadata = d.get("metadata", {})
+
+            source = metadata.get("source", "unknown")
+
+            page = metadata.get("page", "unknown")
+
+            content = d.get("content", "")
+
+            formatted.append(
+                f"""
+[source {source_id}]
+File : {source}
+Page : {page}
+
+{content}
+"""
+            )
+
+        return "\n".join(formatted)
+
+    ###########################################################################
+
+    def generate_answer(self, user_query: str, context: List[Dict]):
+
+        if self.llm is None:
+            raise RuntimeError("LLM is not initialized.")
+
+        print("\nLLM Object:")
+        print(self.llm)
+        print(type(self.llm))
+
+        formatted_context = self.format_context(context)
+        print(f"\nformatted_context:\n{formatted_context}")
 
         prompt = f"""
-        You are a helpful document question-answering assistant.
+You are a helpful document question-answering assistant.
 
-        Use ONLY the information provided in the context below.
+Your task is to answer the user's question using ONLY the information provided in the Context.
 
-        Rules:
-        1. Answer only from the provided context.
-        2. Do not use outside knowledge.
-        3. If the answer is not present in the context, reply exactly:
-        "I couldn't find information related to this question in the uploaded documents."
-        4. Cite the source number(s) and page(s) used for each factual statement.
-        5. Return the answer in the following structured format:
+Rules:
 
-        user_query: "{user_query}"
+1. Use ONLY the provided context. Do NOT use prior knowledge, assumptions, or external information.
+2. If the answer cannot be found in the context, reply EXACTLY:
+"I couldn't find information related to this question in the uploaded documents."
+3. Every answer must be supported by the context.
+4. Each answer must be a complete factual statement, not just a word or short phrase.
+5. Do NOT repeat the same information. If multiple context chunks contain the same fact, merge them into a single answer and cite the most relevant source.
+6. If different sources provide different relevant facts, list each unique fact separately.
+7. Do NOT invent, infer, summarize beyond the provided text, or fill in missing information.
+8. Preserve the meaning of the original text while writing clear, grammatically correct sentences.
+9. Cite the corresponding source number, filename, and page for every answer.
+10. Return ONLY as many answer/source pairs as are actually needed. Do NOT generate empty or duplicate answer2, answer3, etc.
 
-        answer1: "<first factual answer>"
-        source1: "<source_id | source filename | page>"
+Return the answer in exactly the following format:
 
-        answer2: "<second factual answer>"
-        source2: "<source_id | source filename | page>"
+user_query: "{user_query}"
 
-        ... continue for all relevant answers ...
+answer1: "<complete factual answer>"
+source1: "<source id | filename | page>"
 
-        Context:
-        {new_context}
+answer2: "<complete factual answer>"
+source2: "<source id | filename | page>"
 
-        Question:
-        {user_query}
+...
 
-        Answer:
-        """
-        generalized_answer = llm.invoke(prompt)
-        return generalized_answer
+Context:
+
+{formatted_context}
+
+Question:
+
+{user_query}
+
+Answer:
+"""
+
+        print("\nSending prompt to Groq...\n")
+
+        try:
+
+            response = self.llm.invoke(prompt)
+
+            print("Groq response received.\n")
+
+            return response
+
+        except Exception as exc:
+
+            print("Error while invoking LLM:")
+            print(exc)
+
+            raise
+
