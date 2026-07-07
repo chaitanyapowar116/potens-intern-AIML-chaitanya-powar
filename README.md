@@ -407,3 +407,6 @@ The following AI tools and resources were used during the development of this pr
 * Documentation and tutorials were used as learning resources and API references throughout development.
 
 
+![output_screenshots](image.png)
+![without_contradiction](image-1.png)
+![with_contradiction](image-2.png)
